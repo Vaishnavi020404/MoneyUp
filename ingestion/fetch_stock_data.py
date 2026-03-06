@@ -2,7 +2,19 @@ from twelvedata import TDClient
 import sqlite3
 from datetime import datetime
 
-SYMBOLS = ["TSLA", "AAPL", "MSFT", "GOOGL", "AMZN"]
+SYMBOLS = [
+"BANDHANBNK.NSE",
+"CGPOWER.NSE",
+"COALINDIA.NSE",
+"COCHINSHIP.NSE",
+"IDEA.NSE",
+"IRCON.NSE",
+"ITBEES.NSE",
+"SUZLON.NSE",
+"TCS.NSE",
+"UNITECH.NSE",
+"YESBANK.NSE"
+]
 
 td = TDClient(apikey="4d363c98b2d04b3fbff58a21ff4dbcad")
 
