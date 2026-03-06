@@ -6,7 +6,7 @@ SYMBOLS = ["TSLA", "AAPL", "MSFT", "GOOGL", "AMZN"]
 
 td = TDClient(apikey="4d363c98b2d04b3fbff58a21ff4dbcad")
 
-conn = sqlite3.connect("stock_data.db")
+conn = sqlite3.connect("database/stock_data.db")
 c = conn.cursor()
 
 c.execute("""
