@@ -1,24 +1,17 @@
-from twelvedata import TDClient
+from nsetools import Nse
 import sqlite3
 from datetime import datetime
+import os
+
+nse = Nse()
 
 SYMBOLS = [
-"BANDHANBNK.NSE",
-"CGPOWER.NSE",
-"COALINDIA.NSE",
-"COCHINSHIP.NSE",
-"IDEA.NSE",
-"IRCON.NSE",
-"ITBEES.NSE",
-"SUZLON.NSE",
-"TCS.NSE",
-"UNITECH.NSE",
-"YESBANK.NSE"
+    "BANDHANBNK", "CGPOWER", "COALINDIA", "COCHINSHIP",
+    "IDEA", "IRCON", "SUZLON", "TCS", "YESBANK"
 ]
 
-td = TDClient(apikey="4d363c98b2d04b3fbff58a21ff4dbcad")
-
-conn = sqlite3.connect("database/stock_data.db")
+os.makedirs("../database", exist_ok=True)
+conn = sqlite3.connect("../database/stock_data.db")
 c = conn.cursor()
 
 c.execute("""
@@ -29,36 +22,31 @@ CREATE TABLE IF NOT EXISTS stock_prices (
     high REAL,
     low REAL,
     close REAL,
-    volume INTEGER,
-    fetched_at TEXT
+    fetched_at TEXT,
+    PRIMARY KEY (symbol, fetched_at)
 )
 """)
 
 for symbol in SYMBOLS:
-    ts = td.time_series(
-        symbol=symbol,
-        interval="1min",
-        outputsize=5
-    )
+    try:
+        q = nse.get_quote(symbol)
 
-    data = ts.as_json()
-
-    for row in data:
         c.execute("""
-        INSERT INTO stock_prices
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT OR IGNORE INTO stock_prices VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (
             symbol,
-            row["datetime"],
-            float(row["open"]),
-            float(row["high"]),
-            float(row["low"]),
-            float(row["close"]),
-            int(row["volume"]),
+            datetime.now().isoformat(),
+            float(q["open"]),
+            float(q["intraDayHighLow"]["max"]),
+            float(q["intraDayHighLow"]["min"]),
+            float(q["lastPrice"]),
             datetime.now().isoformat()
         ))
 
+        print(f"✓ {symbol} — ₹{q['lastPrice']}")
+
+    except Exception as e:
+        print(f"✗ {symbol} failed: {e}")
+
 conn.commit()
 conn.close()
-
-print("Data inserted correctly.")
