@@ -3,45 +3,40 @@ import sqlite3
 import os
 from datetime import datetime
 
-SYMBOLS = [
-    "BANDHANBNK.NS", "CGPOWER.NS", "COALINDIA.NS", "COCHINSHIP.NS",
-    "IDEA.NS", "IRCON.NS", "SUZLON.NS", "TCS.NS", "YESBANK.NS"
-]
-
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(BASE_DIR, "database", "stock_data.db")
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-conn = sqlite3.connect(DB_PATH)
-c = conn.cursor()
 
-c.execute("""
-CREATE TABLE IF NOT EXISTS stock_prices (
-    symbol TEXT,
-    datetime TEXT,
-    open REAL,
-    high REAL,
-    low REAL,
-    close REAL,
-    fetched_at TEXT,
-    PRIMARY KEY (symbol, datetime)
-)
-""")
+def load_historical(symbol):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
 
-for symbol in SYMBOLS:
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS stock_prices (
+        symbol TEXT,
+        datetime TEXT,
+        open REAL,
+        high REAL,
+        low REAL,
+        close REAL,
+        fetched_at TEXT,
+        PRIMARY KEY (symbol, datetime)
+    )
+    """)
+
     try:
-        ticker = yf.Ticker(symbol)
-        # Daily OHLC from Jan 1 2026 to today
+        ticker = yf.Ticker(f"{symbol}.NS")
         data = ticker.history(start="2026-01-01", end=datetime.today().strftime("%Y-%m-%d"), interval="1d")
 
         if data.empty:
             print(f"No data for {symbol}")
-            continue
+            return False
 
         for dt, row in data.iterrows():
             c.execute("""
             INSERT OR IGNORE INTO stock_prices VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
-                symbol.replace(".NS", ""),
+                symbol,
                 str(dt.date()),
                 float(row["Open"]),
                 float(row["High"]),
@@ -50,10 +45,12 @@ for symbol in SYMBOLS:
                 datetime.now().isoformat()
             ))
 
+        conn.commit()
         print(f"✓ {symbol} — {len(data)} days loaded")
+        return True
 
     except Exception as e:
         print(f"✗ {symbol} failed: {e}")
-
-conn.commit()
-conn.close()
+        return False
+    finally:
+        conn.close()

@@ -5,14 +5,15 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
-import time
+import os
+import sys
 
-st.set_page_config(page_title="NSE Stock Dashboard", layout="wide", page_icon="📈")
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DB_PATH = os.path.join(BASE_DIR, "database", "stock_data.db")
+sys.path.append(os.path.join(BASE_DIR, "ingestion"))
+from load_historical import load_historical
 
-# Auto-refresh every 60 seconds
-st_autorefresh = st.empty()
-count = st_autorefresh.text("")
-time_holder = st.sidebar.empty()
+st.set_page_config(page_title="MoneyUp", layout="wide", page_icon="💹")
 
 st.markdown("""
 <style>
@@ -23,40 +24,48 @@ st.markdown("""
     div[data-testid="stMetricValue"] { font-size: 24px; font-weight: 700; }
     div[data-testid="stMetricDelta"] { font-size: 14px; }
     .section-title { font-family: 'Space Mono', monospace; font-size: 13px; letter-spacing: 3px; text-transform: uppercase; color: #555577; margin-bottom: 16px; }
-    div[data-testid="stHorizontalBlock"] > div { background: #111120; border: 1px solid #1e1e35; border-radius: 10px; padding: 8px; }
     .stTabs [data-baseweb="tab"] { font-family: 'Space Mono', monospace; font-size: 12px; letter-spacing: 1px; }
-    .stDataFrame { background: #111120; }
 </style>
 """, unsafe_allow_html=True)
+
+st.title("💹 MoneyUp — NSE Stock Analysis Dashboard")
+st.caption(f"Last refreshed: {datetime.now().strftime('%d %b %Y, %H:%M:%S')} · Data updates twice daily on weekdays")
+st.markdown('<meta http-equiv="refresh" content="60">', unsafe_allow_html=True)
+
+# ── Sidebar — Add Stock ────────────────────────────────────
+st.sidebar.title("💹 MoneyUp")
+st.sidebar.markdown("---")
+st.sidebar.markdown("**Add a Stock**")
+new_symbol = st.sidebar.text_input("Enter NSE Symbol (e.g. RELIANCE)", "").upper().strip()
+
+if st.sidebar.button("Add Stock"):
+    if new_symbol:
+        with st.spinner(f"Loading 45 days of data for {new_symbol}..."):
+            success = load_historical(new_symbol)
+            if success:
+                st.sidebar.success(f"✓ {new_symbol} added!")
+                st.cache_data.clear()
+            else:
+                st.sidebar.error(f"✗ Could not find {new_symbol}. Check the symbol and try again.")
 
 # ── Load Data ──────────────────────────────────────────────
 @st.cache_data(ttl=60)
 def load_data():
-    conn = sqlite3.connect("../database/stock_data.db")
+    conn = sqlite3.connect(DB_PATH)
     df = pd.read_sql_query("SELECT * FROM stock_prices", conn)
     conn.close()
-    df["datetime"] = pd.to_datetime(df["datetime"])
+    df["datetime"] = pd.to_datetime(df["datetime"], format="mixed")
     df = df.sort_values("datetime")
     return df
 
 df = load_data()
 
-st.title("📈 NSE Stock Market Dashboard")
-st.caption(f"Last refreshed: {datetime.now().strftime('%H:%M:%S')} · Auto-refreshes every 60s")
+if df.empty:
+    st.info("No stocks yet. Add a stock from the sidebar to get started.")
+    st.stop()
 
-# Auto refresh
-st.markdown("""
-<script>
-    setTimeout(function(){ window.location.reload(); }, 60000);
-</script>
-""", unsafe_allow_html=True)
-
-# ── Tabs ───────────────────────────────────────────────────
 tab1, tab2, tab3, tab4 = st.tabs([
-    "🏠  OVERVIEW",
-    "🔍  DEEP DIVE",
-    "📊  ANALYSIS",
-    "⚖️  COMPARE"
+    "🏠  OVERVIEW", "🔍  DEEP DIVE", "📊  ANALYSIS", "⚖️  COMPARE"
 ])
 
 # ══════════════════════════════════════════════════════════
@@ -65,49 +74,46 @@ tab1, tab2, tab3, tab4 = st.tabs([
 with tab1:
     st.markdown('<p class="section-title">All Stocks — Latest Snapshot</p>', unsafe_allow_html=True)
 
-    # Latest price per stock
-    latest_df = df.sort_values("datetime").groupby("symbol").last().reset_index()
-    first_df  = df.sort_values("datetime").groupby("symbol").first().reset_index()
+    latest_df = df.groupby("symbol").last().reset_index()
+    first_df  = df.groupby("symbol").first().reset_index()
+    merged = latest_df[["symbol","close"]].merge(first_df[["symbol","close"]], on="symbol", suffixes=("_latest","_first"))
+    merged["change"]     = merged["close_latest"] - merged["close_first"]
+    merged["pct_change"] = (merged["change"] / merged["close_first"]) * 100
 
-    latest_df["change"]     = latest_df["close"] - first_df["close"]
-    latest_df["pct_change"] = (latest_df["change"] / first_df["close"]) * 100
-
-    # Metric cards — 3 per row
-    symbols = sorted(latest_df["symbol"].tolist())
+    symbols = sorted(merged["symbol"].tolist())
     cols = st.columns(3)
     for i, sym in enumerate(symbols):
-        row = latest_df[latest_df["symbol"] == sym].iloc[0]
-        delta = f"{row['change']:+.2f} ({row['pct_change']:+.2f}%)"
+        row = merged[merged["symbol"] == sym].iloc[0]
         cols[i % 3].metric(
             label=sym,
-            value=f"₹{row['close']:,.2f}",
-            delta=delta,
+            value=f"₹{row['close_latest']:,.2f}",
+            delta=f"{row['change']:+.2f} ({row['pct_change']:+.2f}%)",
             delta_color="normal"
         )
 
     st.divider()
     st.markdown('<p class="section-title">Price Movement — All Stocks</p>', unsafe_allow_html=True)
+    overview_range = st.radio("Range", ["7 Days", "30 Days", "All Time"], horizontal=True)
 
-    # Mini sparkline for each stock in one chart
+    now = df["datetime"].max()
+    ov_start = now - timedelta(days=7) if overview_range == "7 Days" else now - timedelta(days=30) if overview_range == "30 Days" else df["datetime"].min()
+
     fig_overview = go.Figure()
     colors = px.colors.qualitative.Safe
     for i, sym in enumerate(symbols):
-        sym_df = df[df["symbol"] == sym]
+        sym_df = df[(df["symbol"] == sym) & (df["datetime"] >= ov_start)]
         fig_overview.add_trace(go.Scatter(
-            x=sym_df["datetime"],
-            y=sym_df["close"],
-            name=sym,
-            mode="lines",
+            x=sym_df["datetime"], y=sym_df["close"],
+            name=sym, mode="lines",
             line=dict(width=1.5, color=colors[i % len(colors)])
         ))
-
     fig_overview.update_layout(
         paper_bgcolor="#111120", plot_bgcolor="#111120",
         font=dict(color="#aaaacc"),
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
         xaxis=dict(showgrid=False),
         yaxis=dict(showgrid=True, gridcolor="#1e1e35"),
-        height=400, margin=dict(l=0, r=0, t=10, b=0)
+        height=420, margin=dict(l=0, r=0, t=30, b=0)
     )
     st.plotly_chart(fig_overview, use_container_width=True)
 
@@ -116,25 +122,16 @@ with tab1:
 # ══════════════════════════════════════════════════════════
 with tab2:
     col_left, col_right = st.columns([1, 3])
-
     with col_left:
-        selected_symbol = st.selectbox("Select Stock", sorted(df["symbol"].unique()))
-        time_range = st.radio("Time Range", ["Last Hour", "Today", "Last 7 Days", "All Time"])
+        selected_symbol = st.selectbox("Select Stock", sorted(df["symbol"].unique()), key="dd_symbol")
+        time_range = st.radio("Time Range", ["Last 7 Days", "Last 30 Days", "All Time"], key="dd_range")
 
     now = df["datetime"].max()
-    if time_range == "Last Hour":
-        start = now - timedelta(hours=1)
-    elif time_range == "Today":
-        start = now - timedelta(days=1)
-    elif time_range == "Last 7 Days":
-        start = now - timedelta(days=7)
-    else:
-        start = df["datetime"].min()
-
+    start = now - timedelta(days=7) if time_range == "Last 7 Days" else now - timedelta(days=30) if time_range == "Last 30 Days" else df["datetime"].min()
     filtered = df[(df["symbol"] == selected_symbol) & (df["datetime"] >= start)].copy()
 
     if filtered.empty:
-        st.warning("No data for this range yet. Keep your automation script running.")
+        st.warning("No data for this range yet.")
     else:
         latest  = filtered.iloc[-1]
         first   = filtered.iloc[0]
@@ -143,121 +140,85 @@ with tab2:
 
         with col_right:
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Price",    f"₹{latest['close']:,.2f}", f"{p_change:+.2f} ({pct:+.2f}%)")
-            m2.metric("High",     f"₹{filtered['high'].max():,.2f}")
-            m3.metric("Low",      f"₹{filtered['low'].min():,.2f}")
-            m4.metric("Volatility", f"₹{filtered['high'].max() - filtered['low'].min():,.2f}")
+            m1.metric("Current Price", f"₹{latest['close']:,.2f}", f"{p_change:+.2f} ({pct:+.2f}%)")
+            m2.metric("Period High",   f"₹{filtered['high'].max():,.2f}")
+            m3.metric("Period Low",    f"₹{filtered['low'].min():,.2f}")
+            m4.metric("Volatility",    f"₹{filtered['high'].max() - filtered['low'].min():,.2f}")
 
-        # Candlestick + Volume
-        fig2 = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                             row_heights=[0.75, 0.25], vertical_spacing=0.03)
-
-        fig2.add_trace(go.Candlestick(
+        fig2 = go.Figure(go.Candlestick(
             x=filtered["datetime"],
             open=filtered["open"], high=filtered["high"],
             low=filtered["low"],   close=filtered["close"],
-            name="OHLC",
-            increasing_line_color="#00e676",
-            decreasing_line_color="#ff1744"
-        ), row=1, col=1)
-
-        bar_colors = ["#00e676" if c >= o else "#ff1744"
-                      for c, o in zip(filtered["close"], filtered["open"])]
-
-        fig2.add_trace(go.Bar(
-            x=filtered["datetime"],
-            y=[1] * len(filtered),  # placeholder if no volume
-            name="Fetches",
-            marker_color=bar_colors,
-            opacity=0.5
-        ), row=2, col=1)
-
+            increasing_line_color="#00e676", decreasing_line_color="#ff1744"
+        ))
         fig2.update_layout(
             paper_bgcolor="#111120", plot_bgcolor="#111120",
             font=dict(color="#aaaacc"),
             xaxis_rangeslider_visible=False,
-            xaxis2=dict(showgrid=False),
+            xaxis=dict(showgrid=False),
             yaxis=dict(showgrid=True, gridcolor="#1e1e35"),
-            yaxis2=dict(showgrid=False),
-            height=500, margin=dict(l=0, r=0, t=10, b=0),
-            legend=dict(orientation="h")
+            height=500, margin=dict(l=0, r=0, t=10, b=0)
         )
         st.plotly_chart(fig2, use_container_width=True)
 
-        st.markdown('<p class="section-title">Raw Data Table</p>', unsafe_allow_html=True)
-        st.dataframe(
-            filtered[["datetime", "open", "high", "low", "close"]].tail(20).sort_values("datetime", ascending=False),
-            use_container_width=True
-        )
+        st.markdown('<p class="section-title">Recent Price Data</p>', unsafe_allow_html=True)
+        display_df = filtered[["datetime","open","high","low","close"]].copy()
+        display_df["datetime"] = display_df["datetime"].dt.strftime("%d %b %Y")
+        display_df.columns = ["Date","Open ₹","High ₹","Low ₹","Close ₹"]
+        st.dataframe(display_df.sort_values("Date", ascending=False).head(20), use_container_width=True)
 
 # ══════════════════════════════════════════════════════════
-# TAB 3 — SQL ANALYSIS
+# TAB 3 — ANALYSIS
 # ══════════════════════════════════════════════════════════
 with tab3:
-    conn = sqlite3.connect("../database/stock_data.db")
+    conn = sqlite3.connect(DB_PATH)
 
-    st.markdown('<p class="section-title">Average Price Per Stock</p>', unsafe_allow_html=True)
-    avg_df = pd.read_sql_query("""
-        SELECT symbol, ROUND(AVG(close),2) AS avg_price
-        FROM stock_prices GROUP BY symbol ORDER BY avg_price DESC
-    """, conn)
-    fig_avg = px.bar(avg_df, x="symbol", y="avg_price", color="avg_price",
-                     color_continuous_scale="Blues", text="avg_price")
-    fig_avg.update_layout(paper_bgcolor="#111120", plot_bgcolor="#111120",
-                          font=dict(color="#aaaacc"), showlegend=False,
-                          margin=dict(l=0, r=0, t=10, b=0))
+    st.markdown('<p class="section-title">Average Closing Price Per Stock</p>', unsafe_allow_html=True)
+    avg_df = pd.read_sql_query("SELECT symbol, ROUND(AVG(close),2) AS avg_price FROM stock_prices GROUP BY symbol ORDER BY avg_price DESC", conn)
+    fig_avg = px.bar(avg_df, x="symbol", y="avg_price", color="avg_price", color_continuous_scale="Blues", text="avg_price")
+    fig_avg.update_traces(texttemplate="₹%{text:,.0f}", textposition="outside")
+    fig_avg.update_layout(paper_bgcolor="#111120", plot_bgcolor="#111120", font=dict(color="#aaaacc"), showlegend=False, xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor="#1e1e35"), margin=dict(l=0, r=0, t=30, b=0))
     st.plotly_chart(fig_avg, use_container_width=True)
 
     col_a, col_b = st.columns(2)
-
     with col_a:
-        st.markdown('<p class="section-title">Volatility (Price Range)</p>', unsafe_allow_html=True)
-        vol_df = pd.read_sql_query("""
-            SELECT symbol, ROUND(MAX(high)-MIN(low),2) AS volatility
-            FROM stock_prices GROUP BY symbol ORDER BY volatility DESC
-        """, conn)
-        fig_vol = px.bar(vol_df, x="symbol", y="volatility", color="volatility",
-                         color_continuous_scale="Reds", text="volatility")
-        fig_vol.update_layout(paper_bgcolor="#111120", plot_bgcolor="#111120",
-                              font=dict(color="#aaaacc"), showlegend=False,
-                              margin=dict(l=0, r=0, t=10, b=0))
+        st.markdown('<p class="section-title">Volatility — Biggest Price Swings</p>', unsafe_allow_html=True)
+        vol_df = pd.read_sql_query("SELECT symbol, ROUND(MAX(high)-MIN(low),2) AS volatility FROM stock_prices GROUP BY symbol ORDER BY volatility DESC", conn)
+        fig_vol = px.bar(vol_df, x="symbol", y="volatility", color="volatility", color_continuous_scale="Reds", text="volatility")
+        fig_vol.update_traces(texttemplate="₹%{text:,.0f}", textposition="outside")
+        fig_vol.update_layout(paper_bgcolor="#111120", plot_bgcolor="#111120", font=dict(color="#aaaacc"), showlegend=False, xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor="#1e1e35"), margin=dict(l=0, r=0, t=30, b=0))
         st.plotly_chart(fig_vol, use_container_width=True)
 
     with col_b:
-        st.markdown('<p class="section-title">Records Collected Per Stock</p>', unsafe_allow_html=True)
-        rec_df = pd.read_sql_query("""
-            SELECT symbol, COUNT(*) AS records
-            FROM stock_prices GROUP BY symbol ORDER BY records DESC
-        """, conn)
-        fig_rec = px.pie(rec_df, names="symbol", values="records",
-                         color_discrete_sequence=px.colors.qualitative.Safe)
-        fig_rec.update_layout(paper_bgcolor="#111120", plot_bgcolor="#111120",
-                              font=dict(color="#aaaacc"), margin=dict(l=0, r=0, t=10, b=0))
-        st.plotly_chart(fig_rec, use_container_width=True)
+        st.markdown('<p class="section-title">Highest vs Lowest Price Recorded</p>', unsafe_allow_html=True)
+        hl_df = pd.read_sql_query("SELECT symbol, MAX(high) AS highest, MIN(low) AS lowest FROM stock_prices GROUP BY symbol ORDER BY highest DESC", conn)
+        fig_hl = go.Figure()
+        fig_hl.add_trace(go.Bar(name="Highest", x=hl_df["symbol"], y=hl_df["highest"], marker_color="#00e676"))
+        fig_hl.add_trace(go.Bar(name="Lowest",  x=hl_df["symbol"], y=hl_df["lowest"],  marker_color="#ff1744"))
+        fig_hl.update_layout(barmode="group", paper_bgcolor="#111120", plot_bgcolor="#111120", font=dict(color="#aaaacc"), legend=dict(orientation="h"), xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor="#1e1e35"), margin=dict(l=0, r=0, t=30, b=0))
+        st.plotly_chart(fig_hl, use_container_width=True)
 
-    st.markdown('<p class="section-title">Price Change (First vs Latest)</p>', unsafe_allow_html=True)
+    st.markdown('<p class="section-title">% Price Change — Jan 1 to Today</p>', unsafe_allow_html=True)
     change_df = pd.read_sql_query("""
-        SELECT 
-            a.symbol,
-            ROUND(a.close, 2) AS first_price,
-            ROUND(b.close, 2) AS latest_price,
-            ROUND(b.close - a.close, 2) AS change,
-            ROUND((b.close - a.close) / a.close * 100, 2) AS pct_change
+        SELECT f.symbol,
+            ROUND(f.close,2) AS first_price,
+            ROUND(l.close,2) AS latest_price,
+            ROUND(l.close-f.close,2) AS change,
+            ROUND((l.close-f.close)/f.close*100,2) AS pct_change
         FROM
-            (SELECT symbol, close FROM stock_prices WHERE datetime IN (SELECT MIN(datetime) FROM stock_prices GROUP BY symbol)) a
+            (SELECT symbol, close FROM stock_prices WHERE datetime=(SELECT MIN(datetime) FROM stock_prices s2 WHERE s2.symbol=stock_prices.symbol)) f
         JOIN
-            (SELECT symbol, close FROM stock_prices WHERE datetime IN (SELECT MAX(datetime) FROM stock_prices GROUP BY symbol)) b
-        ON a.symbol = b.symbol
-        ORDER BY pct_change DESC
+            (SELECT symbol, close FROM stock_prices WHERE datetime=(SELECT MAX(datetime) FROM stock_prices s2 WHERE s2.symbol=stock_prices.symbol)) l
+        ON f.symbol=l.symbol ORDER BY pct_change DESC
     """, conn)
-    fig_change = px.bar(change_df, x="symbol", y="pct_change",
-                        color="pct_change", text="pct_change",
-                        color_continuous_scale=["#ff1744", "#111120", "#00e676"],
-                        color_continuous_midpoint=0)
-    fig_change.update_layout(paper_bgcolor="#111120", plot_bgcolor="#111120",
-                             font=dict(color="#aaaacc"), showlegend=False,
-                             margin=dict(l=0, r=0, t=10, b=0))
-    st.plotly_chart(fig_change, use_container_width=True)
+
+    if not change_df.empty:
+        fig_change = px.bar(change_df, x="symbol", y="pct_change", color="pct_change", text="pct_change",
+                            color_continuous_scale=["#ff1744","#1a1a2e","#00e676"], color_continuous_midpoint=0)
+        fig_change.update_traces(texttemplate="%{text:+.2f}%", textposition="outside")
+        fig_change.update_layout(paper_bgcolor="#111120", plot_bgcolor="#111120", font=dict(color="#aaaacc"), showlegend=False, xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor="#1e1e35"), margin=dict(l=0, r=0, t=30, b=0))
+        st.plotly_chart(fig_change, use_container_width=True)
+        st.dataframe(change_df, use_container_width=True)
 
     conn.close()
 
@@ -265,26 +226,23 @@ with tab3:
 # TAB 4 — COMPARE
 # ══════════════════════════════════════════════════════════
 with tab4:
-    st.markdown('<p class="section-title">Compare Stocks Side by Side</p>', unsafe_allow_html=True)
-
-    selected_stocks = st.multiselect("Pick stocks to compare", sorted(df["symbol"].unique()),
-                                     default=sorted(df["symbol"].unique())[:3])
+    st.markdown('<p class="section-title">Compare Stocks — % Change from Start</p>', unsafe_allow_html=True)
+    selected_stocks = st.multiselect("Pick stocks to compare", sorted(df["symbol"].unique()), default=sorted(df["symbol"].unique())[:3], key="cmp_stocks")
 
     if len(selected_stocks) < 2:
         st.info("Select at least 2 stocks to compare.")
     else:
-        # Normalize to % change from first data point
         fig_cmp = go.Figure()
         colors = px.colors.qualitative.Safe
         for i, sym in enumerate(selected_stocks):
-            sym_df = df[df["symbol"] == sym].copy()
+            sym_df = df[df["symbol"] == sym].copy().reset_index(drop=True)
+            if sym_df.empty or sym_df["close"].iloc[0] == 0:
+                continue
             base = sym_df["close"].iloc[0]
             sym_df["normalized"] = ((sym_df["close"] - base) / base) * 100
             fig_cmp.add_trace(go.Scatter(
-                x=sym_df["datetime"],
-                y=sym_df["normalized"],
-                name=sym,
-                mode="lines",
+                x=sym_df["datetime"], y=sym_df["normalized"],
+                name=sym, mode="lines",
                 line=dict(width=2, color=colors[i % len(colors)])
             ))
 
@@ -300,11 +258,11 @@ with tab4:
         )
         st.plotly_chart(fig_cmp, use_container_width=True)
 
-        # Side by side stats table
-        st.markdown('<p class="section-title">Stats Comparison</p>', unsafe_allow_html=True)
         stats = []
         for sym in selected_stocks:
             sym_df = df[df["symbol"] == sym]
+            if sym_df.empty:
+                continue
             latest_p = sym_df["close"].iloc[-1]
             first_p  = sym_df["close"].iloc[0]
             stats.append({
@@ -313,8 +271,8 @@ with tab4:
                 "High ₹": f"₹{sym_df['high'].max():,.2f}",
                 "Low ₹": f"₹{sym_df['low'].min():,.2f}",
                 "Avg ₹": f"₹{sym_df['close'].mean():,.2f}",
-                "Volatility": f"₹{sym_df['high'].max() - sym_df['low'].min():,.2f}",
-                "% Change": f"{((latest_p - first_p)/first_p)*100:+.2f}%",
-                "Data Points": len(sym_df)
+                "Volatility": f"₹{sym_df['high'].max()-sym_df['low'].min():,.2f}",
+                "% Change": f"{((latest_p-first_p)/first_p)*100:+.2f}%",
+                "Days of Data": len(sym_df)
             })
         st.dataframe(pd.DataFrame(stats).set_index("Stock"), use_container_width=True)

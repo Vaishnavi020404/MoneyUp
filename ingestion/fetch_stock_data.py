@@ -5,20 +5,12 @@ import os
 
 nse = Nse()
 
-SYMBOLS = [
-    "BANDHANBNK", "CGPOWER", "COALINDIA", "COCHINSHIP",
-    "IDEA", "IRCON", "SUZLON", "TCS", "YESBANK"
-]
-
-
-# Works both locally and on GitHub Actions
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(BASE_DIR, "database", "stock_data.db")
 
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 conn = sqlite3.connect(DB_PATH)
 c = conn.cursor()
-
 
 c.execute("""
 CREATE TABLE IF NOT EXISTS stock_prices (
@@ -33,26 +25,30 @@ CREATE TABLE IF NOT EXISTS stock_prices (
 )
 """)
 
-for symbol in SYMBOLS:
-    try:
-        q = nse.get_quote(symbol)
+# Read symbols from DB — whatever user has added
+c.execute("SELECT DISTINCT symbol FROM stock_prices")
+symbols = [row[0] for row in c.fetchall()]
 
-        c.execute("""
-        INSERT OR IGNORE INTO stock_prices VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (
-            symbol,
-            datetime.now().isoformat(),
-            float(q["open"]),
-            float(q["intraDayHighLow"]["max"]),
-            float(q["intraDayHighLow"]["min"]),
-            float(q["lastPrice"]),
-            datetime.now().isoformat()
-        ))
-
-        print(f"✓ {symbol} — ₹{q['lastPrice']}")
-
-    except Exception as e:
-        print(f"✗ {symbol} failed: {e}")
+if not symbols:
+    print("No stocks in DB yet. User needs to add stocks from the dashboard first.")
+else:
+    for symbol in symbols:
+        try:
+            q = nse.get_quote(symbol)
+            c.execute("""
+            INSERT OR IGNORE INTO stock_prices VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                symbol,
+                datetime.now().isoformat(),
+                float(q["open"]),
+                float(q["intraDayHighLow"]["max"]),
+                float(q["intraDayHighLow"]["min"]),
+                float(q["lastPrice"]),
+                datetime.now().isoformat()
+            ))
+            print(f"✓ {symbol} — ₹{q['lastPrice']}")
+        except Exception as e:
+            print(f"✗ {symbol} failed: {e}")
 
 conn.commit()
 conn.close()
