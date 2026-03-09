@@ -2,14 +2,13 @@ name: Fetch NSE Stock Data
 
 on:
   schedule:
-    - cron: '45 3 * * 1-5'   # 9:15 AM IST (weekdays)
-    - cron: '0 10 * * 1-5'   # 3:30 PM IST (weekdays)
-  workflow_dispatch:           # manual trigger anytime
+    - cron: '45 3 * * 1-5'
+    - cron: '0 10 * * 1-5'
+  workflow_dispatch:
 
 jobs:
   fetch:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v3
@@ -22,7 +21,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install nsetools requests
+        run: pip install yfinance
 
       - name: Run fetch script
         run: python ingestion/fetch_stock_data.py

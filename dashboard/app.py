@@ -3,17 +3,15 @@ import sqlite3
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import os
-import sys
+import yfinance as yf
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(BASE_DIR, "database", "stock_data.db")
-sys.path.append(os.path.join(BASE_DIR, "ingestion"))
-from load_historical import load_historical
+os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
-st.set_page_config(page_title="MoneyUp", layout="wide", page_icon="💹")
+st.set_page_config(page_title="MoneyUp", layout="wide", page_icon="🪙")
 
 st.markdown("""
 <style>
@@ -28,25 +26,53 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("💹 MoneyUp — NSE Stock Analysis Dashboard")
-st.caption(f"Last refreshed: {datetime.now().strftime('%d %b %Y, %H:%M:%S')} · Data updates twice daily on weekdays")
+st.title("🪙 MoneyUp — NSE Stock Analysis Dashboard")
+st.caption(f"Last refreshed: {datetime.now().strftime('%d %b %Y, %H:%M:%S')} · Updates twice daily on weekdays")
 st.markdown('<meta http-equiv="refresh" content="60">', unsafe_allow_html=True)
 
-# ── Sidebar — Add Stock ────────────────────────────────────
-st.sidebar.title("💹 MoneyUp")
+# ── Add Stock Sidebar ──────────────────────────────────────
+st.sidebar.title("🪙 MoneyUp")
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Add a Stock**")
 new_symbol = st.sidebar.text_input("Enter NSE Symbol (e.g. RELIANCE)", "").upper().strip()
 
 if st.sidebar.button("Add Stock"):
     if new_symbol:
-        with st.spinner(f"Loading 45 days of data for {new_symbol}..."):
-            success = load_historical(new_symbol)
-            if success:
-                st.sidebar.success(f"✓ {new_symbol} added!")
-                st.cache_data.clear()
-            else:
-                st.sidebar.error(f"✗ Could not find {new_symbol}. Check the symbol and try again.")
+        with st.spinner(f"Loading data for {new_symbol}..."):
+            try:
+                ticker = yf.Ticker(f"{new_symbol}.NS")
+                data = ticker.history(start="2026-01-01", end=datetime.today().strftime("%Y-%m-%d"), interval="1d")
+
+                if data.empty:
+                    st.sidebar.error(f"✗ Could not find {new_symbol}. Check the symbol.")
+                else:
+                    conn = sqlite3.connect(DB_PATH)
+                    c = conn.cursor()
+                    c.execute("""
+                    CREATE TABLE IF NOT EXISTS stock_prices (
+                        symbol TEXT, datetime TEXT, open REAL,
+                        high REAL, low REAL, close REAL, fetched_at TEXT,
+                        PRIMARY KEY (symbol, datetime)
+                    )
+                    """)
+                    for dt, row in data.iterrows():
+                        c.execute("INSERT OR IGNORE INTO stock_prices VALUES (?,?,?,?,?,?,?)", (
+                            new_symbol,
+                            str(dt.date()),
+                            float(row["Open"]),
+                            float(row["High"]),
+                            float(row["Low"]),
+                            float(row["Close"]),
+                            datetime.now().isoformat()
+                        ))
+                    conn.commit()
+                    conn.close()
+                    st.sidebar.success(f"✓ {new_symbol} added with {len(data)} days of data!")
+                    st.cache_data.clear()
+                    st.rerun()
+
+            except Exception as e:
+                st.sidebar.error(f"✗ Error: {e}")
 
 # ── Load Data ──────────────────────────────────────────────
 @st.cache_data(ttl=60)
@@ -61,7 +87,7 @@ def load_data():
 df = load_data()
 
 if df.empty:
-    st.info("No stocks yet. Add a stock from the sidebar to get started.")
+    st.info("👈 No stocks yet. Add a stock from the sidebar to get started.")
     st.stop()
 
 tab1, tab2, tab3, tab4 = st.tabs([
@@ -76,7 +102,9 @@ with tab1:
 
     latest_df = df.groupby("symbol").last().reset_index()
     first_df  = df.groupby("symbol").first().reset_index()
-    merged = latest_df[["symbol","close"]].merge(first_df[["symbol","close"]], on="symbol", suffixes=("_latest","_first"))
+    merged = latest_df[["symbol","close"]].merge(
+        first_df[["symbol","close"]], on="symbol", suffixes=("_latest","_first")
+    )
     merged["change"]     = merged["close_latest"] - merged["close_first"]
     merged["pct_change"] = (merged["change"] / merged["close_first"]) * 100
 
@@ -96,7 +124,12 @@ with tab1:
     overview_range = st.radio("Range", ["7 Days", "30 Days", "All Time"], horizontal=True)
 
     now = df["datetime"].max()
-    ov_start = now - timedelta(days=7) if overview_range == "7 Days" else now - timedelta(days=30) if overview_range == "30 Days" else df["datetime"].min()
+    if overview_range == "7 Days":
+        ov_start = now - timedelta(days=7)
+    elif overview_range == "30 Days":
+        ov_start = now - timedelta(days=30)
+    else:
+        ov_start = df["datetime"].min()
 
     fig_overview = go.Figure()
     colors = px.colors.qualitative.Safe
@@ -127,7 +160,13 @@ with tab2:
         time_range = st.radio("Time Range", ["Last 7 Days", "Last 30 Days", "All Time"], key="dd_range")
 
     now = df["datetime"].max()
-    start = now - timedelta(days=7) if time_range == "Last 7 Days" else now - timedelta(days=30) if time_range == "Last 30 Days" else df["datetime"].min()
+    if time_range == "Last 7 Days":
+        start = now - timedelta(days=7)
+    elif time_range == "Last 30 Days":
+        start = now - timedelta(days=30)
+    else:
+        start = df["datetime"].min()
+
     filtered = df[(df["symbol"] == selected_symbol) & (df["datetime"] >= start)].copy()
 
     if filtered.empty:
@@ -177,7 +216,9 @@ with tab3:
     avg_df = pd.read_sql_query("SELECT symbol, ROUND(AVG(close),2) AS avg_price FROM stock_prices GROUP BY symbol ORDER BY avg_price DESC", conn)
     fig_avg = px.bar(avg_df, x="symbol", y="avg_price", color="avg_price", color_continuous_scale="Blues", text="avg_price")
     fig_avg.update_traces(texttemplate="₹%{text:,.0f}", textposition="outside")
-    fig_avg.update_layout(paper_bgcolor="#111120", plot_bgcolor="#111120", font=dict(color="#aaaacc"), showlegend=False, xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor="#1e1e35"), margin=dict(l=0, r=0, t=30, b=0))
+    fig_avg.update_layout(paper_bgcolor="#111120", plot_bgcolor="#111120", font=dict(color="#aaaacc"),
+                          showlegend=False, xaxis=dict(showgrid=False),
+                          yaxis=dict(showgrid=True, gridcolor="#1e1e35"), margin=dict(l=0, r=0, t=30, b=0))
     st.plotly_chart(fig_avg, use_container_width=True)
 
     col_a, col_b = st.columns(2)
@@ -186,7 +227,9 @@ with tab3:
         vol_df = pd.read_sql_query("SELECT symbol, ROUND(MAX(high)-MIN(low),2) AS volatility FROM stock_prices GROUP BY symbol ORDER BY volatility DESC", conn)
         fig_vol = px.bar(vol_df, x="symbol", y="volatility", color="volatility", color_continuous_scale="Reds", text="volatility")
         fig_vol.update_traces(texttemplate="₹%{text:,.0f}", textposition="outside")
-        fig_vol.update_layout(paper_bgcolor="#111120", plot_bgcolor="#111120", font=dict(color="#aaaacc"), showlegend=False, xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor="#1e1e35"), margin=dict(l=0, r=0, t=30, b=0))
+        fig_vol.update_layout(paper_bgcolor="#111120", plot_bgcolor="#111120", font=dict(color="#aaaacc"),
+                              showlegend=False, xaxis=dict(showgrid=False),
+                              yaxis=dict(showgrid=True, gridcolor="#1e1e35"), margin=dict(l=0, r=0, t=30, b=0))
         st.plotly_chart(fig_vol, use_container_width=True)
 
     with col_b:
@@ -195,7 +238,10 @@ with tab3:
         fig_hl = go.Figure()
         fig_hl.add_trace(go.Bar(name="Highest", x=hl_df["symbol"], y=hl_df["highest"], marker_color="#00e676"))
         fig_hl.add_trace(go.Bar(name="Lowest",  x=hl_df["symbol"], y=hl_df["lowest"],  marker_color="#ff1744"))
-        fig_hl.update_layout(barmode="group", paper_bgcolor="#111120", plot_bgcolor="#111120", font=dict(color="#aaaacc"), legend=dict(orientation="h"), xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor="#1e1e35"), margin=dict(l=0, r=0, t=30, b=0))
+        fig_hl.update_layout(barmode="group", paper_bgcolor="#111120", plot_bgcolor="#111120",
+                             font=dict(color="#aaaacc"), legend=dict(orientation="h"),
+                             xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor="#1e1e35"),
+                             margin=dict(l=0, r=0, t=30, b=0))
         st.plotly_chart(fig_hl, use_container_width=True)
 
     st.markdown('<p class="section-title">% Price Change — Jan 1 to Today</p>', unsafe_allow_html=True)
@@ -216,7 +262,9 @@ with tab3:
         fig_change = px.bar(change_df, x="symbol", y="pct_change", color="pct_change", text="pct_change",
                             color_continuous_scale=["#ff1744","#1a1a2e","#00e676"], color_continuous_midpoint=0)
         fig_change.update_traces(texttemplate="%{text:+.2f}%", textposition="outside")
-        fig_change.update_layout(paper_bgcolor="#111120", plot_bgcolor="#111120", font=dict(color="#aaaacc"), showlegend=False, xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor="#1e1e35"), margin=dict(l=0, r=0, t=30, b=0))
+        fig_change.update_layout(paper_bgcolor="#111120", plot_bgcolor="#111120", font=dict(color="#aaaacc"),
+                                 showlegend=False, xaxis=dict(showgrid=False),
+                                 yaxis=dict(showgrid=True, gridcolor="#1e1e35"), margin=dict(l=0, r=0, t=30, b=0))
         st.plotly_chart(fig_change, use_container_width=True)
         st.dataframe(change_df, use_container_width=True)
 
@@ -227,7 +275,8 @@ with tab3:
 # ══════════════════════════════════════════════════════════
 with tab4:
     st.markdown('<p class="section-title">Compare Stocks — % Change from Start</p>', unsafe_allow_html=True)
-    selected_stocks = st.multiselect("Pick stocks to compare", sorted(df["symbol"].unique()), default=sorted(df["symbol"].unique())[:3], key="cmp_stocks")
+    selected_stocks = st.multiselect("Pick stocks to compare", sorted(df["symbol"].unique()),
+                                     default=sorted(df["symbol"].unique())[:3], key="cmp_stocks")
 
     if len(selected_stocks) < 2:
         st.info("Select at least 2 stocks to compare.")

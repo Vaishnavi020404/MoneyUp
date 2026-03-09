@@ -1,14 +1,12 @@
-from nsetools import Nse
+import yfinance as yf
 import sqlite3
-from datetime import datetime
 import os
-
-nse = Nse()
+from datetime import datetime
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(BASE_DIR, "database", "stock_data.db")
-
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+
 conn = sqlite3.connect(DB_PATH)
 c = conn.cursor()
 
@@ -21,7 +19,7 @@ CREATE TABLE IF NOT EXISTS stock_prices (
     low REAL,
     close REAL,
     fetched_at TEXT,
-    PRIMARY KEY (symbol, fetched_at)
+    PRIMARY KEY (symbol, datetime)
 )
 """)
 
@@ -30,23 +28,34 @@ c.execute("SELECT DISTINCT symbol FROM stock_prices")
 symbols = [row[0] for row in c.fetchall()]
 
 if not symbols:
-    print("No stocks in DB yet. User needs to add stocks from the dashboard first.")
+    print("No stocks in DB yet.")
 else:
     for symbol in symbols:
         try:
-            q = nse.get_quote(symbol)
+            ticker = yf.Ticker(f"{symbol}.NS")
+            data = ticker.history(period="1d", interval="1m")
+
+            if data.empty:
+                print(f"No data for {symbol}")
+                continue
+
+            latest = data.iloc[-1]
+            latest_dt = str(data.index[-1])
+
             c.execute("""
             INSERT OR IGNORE INTO stock_prices VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
                 symbol,
-                datetime.now().isoformat(),
-                float(q["open"]),
-                float(q["intraDayHighLow"]["max"]),
-                float(q["intraDayHighLow"]["min"]),
-                float(q["lastPrice"]),
+                latest_dt,
+                float(latest["Open"]),
+                float(latest["High"]),
+                float(latest["Low"]),
+                float(latest["Close"]),
                 datetime.now().isoformat()
             ))
-            print(f"✓ {symbol} — ₹{q['lastPrice']}")
+
+            print(f"✓ {symbol} updated")
+
         except Exception as e:
             print(f"✗ {symbol} failed: {e}")
 
