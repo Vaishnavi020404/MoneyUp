@@ -27,7 +27,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🪙 MoneyUp — NSE Stock Analysis Dashboard")
-st.caption(f"Last refreshed: {datetime.now().strftime('%d %b %Y, %H:%M:%S')} · Prices reflect previous trading day's closing price · Updates twice daily on weekdays")
+st.info(f"📅 Data as of {(datetime.now() - timedelta(days=1)).strftime('%d %b %Y')} · Prices are previous trading day's closing prices")
 st.markdown('<meta http-equiv="refresh" content="60">', unsafe_allow_html=True)
 
 # ── Helper ─────────────────────────────────────────────────
