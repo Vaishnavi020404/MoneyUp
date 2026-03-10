@@ -28,19 +28,20 @@ c.execute("SELECT DISTINCT symbol FROM stock_prices")
 symbols = [row[0] for row in c.fetchall()]
 
 if not symbols:
-    print("No stocks in DB yet.")
+    print("No stocks in DB yet. Add stocks from the dashboard first.")
 else:
     for symbol in symbols:
         try:
             ticker = yf.Ticker(f"{symbol}.NS")
-            data = ticker.history(period="1d", interval="1m")
+            # Fetch only the latest trading day
+            data = ticker.history(period="2d", interval="1d")
 
             if data.empty:
                 print(f"No data for {symbol}")
                 continue
 
             latest = data.iloc[-1]
-            latest_dt = str(data.index[-1])
+            latest_dt = str(data.index[-1].date())
 
             c.execute("""
             INSERT OR IGNORE INTO stock_prices VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -54,7 +55,7 @@ else:
                 datetime.now().isoformat()
             ))
 
-            print(f"✓ {symbol} updated")
+            print(f"✓ {symbol} — ₹{latest['Close']:.2f}")
 
         except Exception as e:
             print(f"✗ {symbol} failed: {e}")

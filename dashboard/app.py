@@ -30,11 +30,29 @@ st.title("🪙 MoneyUp — NSE Stock Analysis Dashboard")
 st.caption(f"Last refreshed: {datetime.now().strftime('%d %b %Y, %H:%M:%S')} · Updates twice daily on weekdays")
 st.markdown('<meta http-equiv="refresh" content="60">', unsafe_allow_html=True)
 
-# ── Add Stock Sidebar ──────────────────────────────────────
+# ── Helper: ensure table exists ────────────────────────────
+def ensure_table():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS stock_prices (
+        symbol TEXT, datetime TEXT, open REAL,
+        high REAL, low REAL, close REAL, fetched_at TEXT,
+        PRIMARY KEY (symbol, datetime)
+    )
+    """)
+    conn.commit()
+    conn.close()
+
+ensure_table()
+
+# ── Sidebar ────────────────────────────────────────────────
 st.sidebar.title("🪙 MoneyUp")
 st.sidebar.markdown("---")
+
+# ADD STOCK
 st.sidebar.markdown("**Add a Stock**")
-new_symbol = st.sidebar.text_input("Enter NSE Symbol (e.g. RELIANCE)", "").upper().strip()
+new_symbol = st.sidebar.text_input("NSE Symbol (e.g. RELIANCE)", "").upper().strip()
 
 if st.sidebar.button("Add Stock"):
     if new_symbol:
@@ -48,13 +66,8 @@ if st.sidebar.button("Add Stock"):
                 else:
                     conn = sqlite3.connect(DB_PATH)
                     c = conn.cursor()
-                    c.execute("""
-                    CREATE TABLE IF NOT EXISTS stock_prices (
-                        symbol TEXT, datetime TEXT, open REAL,
-                        high REAL, low REAL, close REAL, fetched_at TEXT,
-                        PRIMARY KEY (symbol, datetime)
-                    )
-                    """)
+                    # Delete old dirty data for this symbol first
+                    c.execute("DELETE FROM stock_prices WHERE symbol = ?", (new_symbol,))
                     for dt, row in data.iterrows():
                         c.execute("INSERT OR IGNORE INTO stock_prices VALUES (?,?,?,?,?,?,?)", (
                             new_symbol,
@@ -70,9 +83,28 @@ if st.sidebar.button("Add Stock"):
                     st.sidebar.success(f"✓ {new_symbol} added with {len(data)} days of data!")
                     st.cache_data.clear()
                     st.rerun()
-
             except Exception as e:
                 st.sidebar.error(f"✗ Error: {e}")
+
+# REMOVE STOCK
+st.sidebar.markdown("---")
+st.sidebar.markdown("**Remove a Stock**")
+
+conn = sqlite3.connect(DB_PATH)
+existing_symbols = pd.read_sql_query("SELECT DISTINCT symbol FROM stock_prices ORDER BY symbol", conn)["symbol"].tolist()
+conn.close()
+
+if existing_symbols:
+    remove_symbol = st.sidebar.selectbox("Select stock to remove", existing_symbols)
+    if st.sidebar.button("Remove Stock"):
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("DELETE FROM stock_prices WHERE symbol = ?", (remove_symbol,))
+        conn.commit()
+        conn.close()
+        st.sidebar.success(f"✓ {remove_symbol} removed!")
+        st.cache_data.clear()
+        st.rerun()
 
 # ── Load Data ──────────────────────────────────────────────
 @st.cache_data(ttl=60)
@@ -120,7 +152,7 @@ with tab1:
         )
 
     st.divider()
-    st.markdown('<p class="section-title">Price Movement — All Stocks</p>', unsafe_allow_html=True)
+    st.markdown('<p class="section-title">% Price Change — All Stocks Over Time</p>', unsafe_allow_html=True)
     overview_range = st.radio("Range", ["7 Days", "30 Days", "All Time"], horizontal=True)
 
     now = df["datetime"].max()
@@ -131,20 +163,30 @@ with tab1:
     else:
         ov_start = df["datetime"].min()
 
+    # Normalized % change so all stocks visible on same chart
     fig_overview = go.Figure()
     colors = px.colors.qualitative.Safe
     for i, sym in enumerate(symbols):
-        sym_df = df[(df["symbol"] == sym) & (df["datetime"] >= ov_start)]
+        sym_df = df[(df["symbol"] == sym) & (df["datetime"] >= ov_start)].copy().reset_index(drop=True)
+        if sym_df.empty:
+            continue
+        base = sym_df["close"].iloc[0]
+        if base == 0:
+            continue
+        sym_df["pct"] = ((sym_df["close"] - base) / base) * 100
         fig_overview.add_trace(go.Scatter(
-            x=sym_df["datetime"], y=sym_df["close"],
+            x=sym_df["datetime"], y=sym_df["pct"],
             name=sym, mode="lines",
             line=dict(width=1.5, color=colors[i % len(colors)])
         ))
+
+    fig_overview.add_hline(y=0, line_dash="dash", line_color="#333355")
     fig_overview.update_layout(
         paper_bgcolor="#111120", plot_bgcolor="#111120",
         font=dict(color="#aaaacc"),
+        yaxis_title="% Change",
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
-        xaxis=dict(showgrid=False),
+        xaxis=dict(showgrid=False, rangebreaks=[dict(bounds=["sat","mon"])]),
         yaxis=dict(showgrid=True, gridcolor="#1e1e35"),
         height=420, margin=dict(l=0, r=0, t=30, b=0)
     )
@@ -194,7 +236,7 @@ with tab2:
             paper_bgcolor="#111120", plot_bgcolor="#111120",
             font=dict(color="#aaaacc"),
             xaxis_rangeslider_visible=False,
-            xaxis=dict(showgrid=False),
+            xaxis=dict(showgrid=False, rangebreaks=[dict(bounds=["sat","mon"])]),
             yaxis=dict(showgrid=True, gridcolor="#1e1e35"),
             height=500, margin=dict(l=0, r=0, t=10, b=0)
         )
@@ -204,7 +246,10 @@ with tab2:
         display_df = filtered[["datetime","open","high","low","close"]].copy()
         display_df["datetime"] = display_df["datetime"].dt.strftime("%d %b %Y")
         display_df.columns = ["Date","Open ₹","High ₹","Low ₹","Close ₹"]
-        st.dataframe(display_df.sort_values("Date", ascending=False).head(20), use_container_width=True)
+        st.dataframe(
+            display_df.sort_values("Date", ascending=False).head(20).reset_index(drop=True),
+            use_container_width=True
+        )
 
 # ══════════════════════════════════════════════════════════
 # TAB 3 — ANALYSIS
@@ -266,7 +311,7 @@ with tab3:
                                  showlegend=False, xaxis=dict(showgrid=False),
                                  yaxis=dict(showgrid=True, gridcolor="#1e1e35"), margin=dict(l=0, r=0, t=30, b=0))
         st.plotly_chart(fig_change, use_container_width=True)
-        st.dataframe(change_df, use_container_width=True)
+        st.dataframe(change_df.reset_index(drop=True), use_container_width=True)
 
     conn.close()
 
@@ -300,7 +345,7 @@ with tab4:
             paper_bgcolor="#111120", plot_bgcolor="#111120",
             font=dict(color="#aaaacc"),
             yaxis_title="% Change from Start",
-            xaxis=dict(showgrid=False),
+            xaxis=dict(showgrid=False, rangebreaks=[dict(bounds=["sat","mon"])]),
             yaxis=dict(showgrid=True, gridcolor="#1e1e35"),
             height=450, margin=dict(l=0, r=0, t=10, b=0),
             legend=dict(orientation="h", yanchor="bottom", y=1.02)
