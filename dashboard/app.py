@@ -30,7 +30,7 @@ st.title("🪙 MoneyUp — NSE Stock Analysis Dashboard")
 st.caption(f"Last refreshed: {datetime.now().strftime('%d %b %Y, %H:%M:%S')} · Updates twice daily on weekdays")
 st.markdown('<meta http-equiv="refresh" content="60">', unsafe_allow_html=True)
 
-# ── Helper: ensure table exists ────────────────────────────
+# ── Helper ─────────────────────────────────────────────────
 def ensure_table():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -51,8 +51,8 @@ st.sidebar.title("🪙 MoneyUp")
 st.sidebar.markdown("---")
 
 # ADD STOCK
-st.sidebar.markdown("**Add a Stock**")
-new_symbol = st.sidebar.text_input("NSE Symbol (e.g. RELIANCE)", "").upper().strip()
+st.sidebar.markdown("**➕ Add a Stock**")
+new_symbol = st.sidebar.text_input("NSE Symbol (e.g. TCS, HDFCBANK)", "").upper().strip()
 
 if st.sidebar.button("Add Stock"):
     if new_symbol:
@@ -62,11 +62,10 @@ if st.sidebar.button("Add Stock"):
                 data = ticker.history(start="2026-01-01", end=datetime.today().strftime("%Y-%m-%d"), interval="1d")
 
                 if data.empty:
-                    st.sidebar.error(f"✗ Could not find {new_symbol}. Check the symbol.")
+                    st.sidebar.error(f"✗ '{new_symbol}' not found. Check the NSE symbol and try again.")
                 else:
                     conn = sqlite3.connect(DB_PATH)
                     c = conn.cursor()
-                    # Delete old dirty data for this symbol first
                     c.execute("DELETE FROM stock_prices WHERE symbol = ?", (new_symbol,))
                     for dt, row in data.iterrows():
                         c.execute("INSERT OR IGNORE INTO stock_prices VALUES (?,?,?,?,?,?,?)", (
@@ -88,11 +87,11 @@ if st.sidebar.button("Add Stock"):
 
 # REMOVE STOCK
 st.sidebar.markdown("---")
-st.sidebar.markdown("**Remove a Stock**")
+st.sidebar.markdown("**➖ Remove a Stock**")
 
-conn = sqlite3.connect(DB_PATH)
-existing_symbols = pd.read_sql_query("SELECT DISTINCT symbol FROM stock_prices ORDER BY symbol", conn)["symbol"].tolist()
-conn.close()
+conn_s = sqlite3.connect(DB_PATH)
+existing_symbols = pd.read_sql_query("SELECT DISTINCT symbol FROM stock_prices ORDER BY symbol", conn_s)["symbol"].tolist()
+conn_s.close()
 
 if existing_symbols:
     remove_symbol = st.sidebar.selectbox("Select stock to remove", existing_symbols)
@@ -163,28 +162,25 @@ with tab1:
     else:
         ov_start = df["datetime"].min()
 
-    # Normalized % change so all stocks visible on same chart
     fig_overview = go.Figure()
     colors = px.colors.qualitative.Safe
     for i, sym in enumerate(symbols):
         sym_df = df[(df["symbol"] == sym) & (df["datetime"] >= ov_start)].copy().reset_index(drop=True)
-        if sym_df.empty:
+        if sym_df.empty or sym_df["close"].iloc[0] == 0:
             continue
         base = sym_df["close"].iloc[0]
-        if base == 0:
-            continue
         sym_df["pct"] = ((sym_df["close"] - base) / base) * 100
         fig_overview.add_trace(go.Scatter(
             x=sym_df["datetime"], y=sym_df["pct"],
             name=sym, mode="lines",
-            line=dict(width=1.5, color=colors[i % len(colors)])
+            line=dict(width=2, color=colors[i % len(colors)])
         ))
 
     fig_overview.add_hline(y=0, line_dash="dash", line_color="#333355")
     fig_overview.update_layout(
         paper_bgcolor="#111120", plot_bgcolor="#111120",
         font=dict(color="#aaaacc"),
-        yaxis_title="% Change",
+        yaxis_title="% Change from Start",
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
         xaxis=dict(showgrid=False, rangebreaks=[dict(bounds=["sat","mon"])]),
         yaxis=dict(showgrid=True, gridcolor="#1e1e35"),
@@ -221,10 +217,10 @@ with tab2:
 
         with col_right:
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Current Price", f"₹{latest['close']:,.2f}", f"{p_change:+.2f} ({pct:+.2f}%)")
-            m2.metric("Period High",   f"₹{filtered['high'].max():,.2f}")
-            m3.metric("Period Low",    f"₹{filtered['low'].min():,.2f}")
-            m4.metric("Volatility",    f"₹{filtered['high'].max() - filtered['low'].min():,.2f}")
+            m1.metric("Current Price",    f"₹{latest['close']:,.2f}", f"{p_change:+.2f} ({pct:+.2f}%)")
+            m2.metric("Highest Price",    f"₹{filtered['high'].max():,.2f}")
+            m3.metric("Lowest Price",     f"₹{filtered['low'].min():,.2f}")
+            m4.metric("Price Swing",      f"₹{filtered['high'].max() - filtered['low'].min():,.2f}")
 
         fig2 = go.Figure(go.Candlestick(
             x=filtered["datetime"],
@@ -237,19 +233,20 @@ with tab2:
             font=dict(color="#aaaacc"),
             xaxis_rangeslider_visible=False,
             xaxis=dict(showgrid=False, rangebreaks=[dict(bounds=["sat","mon"])]),
-            yaxis=dict(showgrid=True, gridcolor="#1e1e35"),
+            yaxis=dict(showgrid=True, gridcolor="#1e1e35", title="Price (₹)"),
             height=500, margin=dict(l=0, r=0, t=10, b=0)
         )
         st.plotly_chart(fig2, use_container_width=True)
 
-        st.markdown('<p class="section-title">Recent Price Data</p>', unsafe_allow_html=True)
+        # Clean price history table
+        st.markdown('<p class="section-title">Price History</p>', unsafe_allow_html=True)
         display_df = filtered[["datetime","open","high","low","close"]].copy()
         display_df["datetime"] = display_df["datetime"].dt.strftime("%d %b %Y")
-        display_df.columns = ["Date","Open ₹","High ₹","Low ₹","Close ₹"]
-        st.dataframe(
-            display_df.sort_values("Date", ascending=False).head(20).reset_index(drop=True),
-            use_container_width=True
-        )
+        display_df = display_df.drop_duplicates(subset=["datetime"])
+        display_df.columns = ["Date", "Open ₹", "High ₹", "Low ₹", "Close ₹"]
+        display_df = display_df.sort_values("Date", ascending=False).head(20).reset_index(drop=True)
+        display_df.index = display_df.index + 1
+        st.dataframe(display_df, use_container_width=True)
 
 # ══════════════════════════════════════════════════════════
 # TAB 3 — ANALYSIS
@@ -262,19 +259,21 @@ with tab3:
     fig_avg = px.bar(avg_df, x="symbol", y="avg_price", color="avg_price", color_continuous_scale="Blues", text="avg_price")
     fig_avg.update_traces(texttemplate="₹%{text:,.0f}", textposition="outside")
     fig_avg.update_layout(paper_bgcolor="#111120", plot_bgcolor="#111120", font=dict(color="#aaaacc"),
-                          showlegend=False, xaxis=dict(showgrid=False),
-                          yaxis=dict(showgrid=True, gridcolor="#1e1e35"), margin=dict(l=0, r=0, t=30, b=0))
+                          showlegend=False, xaxis=dict(showgrid=False, title="Stock"),
+                          yaxis=dict(showgrid=True, gridcolor="#1e1e35", title="Average Price (₹)"),
+                          margin=dict(l=0, r=0, t=30, b=0))
     st.plotly_chart(fig_avg, use_container_width=True)
 
     col_a, col_b = st.columns(2)
     with col_a:
-        st.markdown('<p class="section-title">Volatility — Biggest Price Swings</p>', unsafe_allow_html=True)
+        st.markdown('<p class="section-title">Price Swing — Highest to Lowest</p>', unsafe_allow_html=True)
         vol_df = pd.read_sql_query("SELECT symbol, ROUND(MAX(high)-MIN(low),2) AS volatility FROM stock_prices GROUP BY symbol ORDER BY volatility DESC", conn)
         fig_vol = px.bar(vol_df, x="symbol", y="volatility", color="volatility", color_continuous_scale="Reds", text="volatility")
         fig_vol.update_traces(texttemplate="₹%{text:,.0f}", textposition="outside")
         fig_vol.update_layout(paper_bgcolor="#111120", plot_bgcolor="#111120", font=dict(color="#aaaacc"),
-                              showlegend=False, xaxis=dict(showgrid=False),
-                              yaxis=dict(showgrid=True, gridcolor="#1e1e35"), margin=dict(l=0, r=0, t=30, b=0))
+                              showlegend=False, xaxis=dict(showgrid=False, title="Stock"),
+                              yaxis=dict(showgrid=True, gridcolor="#1e1e35", title="Price Swing (₹)"),
+                              margin=dict(l=0, r=0, t=30, b=0))
         st.plotly_chart(fig_vol, use_container_width=True)
 
     with col_b:
@@ -285,31 +284,35 @@ with tab3:
         fig_hl.add_trace(go.Bar(name="Lowest",  x=hl_df["symbol"], y=hl_df["lowest"],  marker_color="#ff1744"))
         fig_hl.update_layout(barmode="group", paper_bgcolor="#111120", plot_bgcolor="#111120",
                              font=dict(color="#aaaacc"), legend=dict(orientation="h"),
-                             xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor="#1e1e35"),
+                             xaxis=dict(showgrid=False, title="Stock"),
+                             yaxis=dict(showgrid=True, gridcolor="#1e1e35", title="Price (₹)"),
                              margin=dict(l=0, r=0, t=30, b=0))
         st.plotly_chart(fig_hl, use_container_width=True)
 
-    st.markdown('<p class="section-title">% Price Change — Jan 1 to Today</p>', unsafe_allow_html=True)
+    st.markdown('<p class="section-title">Percentage Change — January 1 to Today</p>', unsafe_allow_html=True)
     change_df = pd.read_sql_query("""
         SELECT f.symbol,
-            ROUND(f.close,2) AS first_price,
-            ROUND(l.close,2) AS latest_price,
-            ROUND(l.close-f.close,2) AS change,
-            ROUND((l.close-f.close)/f.close*100,2) AS pct_change
+            ROUND(f.close,2) AS "Price on Jan 1 (₹)",
+            ROUND(l.close,2) AS "Latest Price (₹)",
+            ROUND(l.close-f.close,2) AS "Change (₹)",
+            ROUND((l.close-f.close)/f.close*100,2) AS "Percentage Change (%)"
         FROM
             (SELECT symbol, close FROM stock_prices WHERE datetime=(SELECT MIN(datetime) FROM stock_prices s2 WHERE s2.symbol=stock_prices.symbol)) f
         JOIN
             (SELECT symbol, close FROM stock_prices WHERE datetime=(SELECT MAX(datetime) FROM stock_prices s2 WHERE s2.symbol=stock_prices.symbol)) l
-        ON f.symbol=l.symbol ORDER BY pct_change DESC
+        ON f.symbol=l.symbol ORDER BY "Percentage Change (%)" DESC
     """, conn)
 
     if not change_df.empty:
-        fig_change = px.bar(change_df, x="symbol", y="pct_change", color="pct_change", text="pct_change",
-                            color_continuous_scale=["#ff1744","#1a1a2e","#00e676"], color_continuous_midpoint=0)
+        fig_change = px.bar(change_df, x="symbol", y="Percentage Change (%)",
+                            color="Percentage Change (%)", text="Percentage Change (%)",
+                            color_continuous_scale=["#ff1744","#1a1a2e","#00e676"],
+                            color_continuous_midpoint=0)
         fig_change.update_traces(texttemplate="%{text:+.2f}%", textposition="outside")
         fig_change.update_layout(paper_bgcolor="#111120", plot_bgcolor="#111120", font=dict(color="#aaaacc"),
-                                 showlegend=False, xaxis=dict(showgrid=False),
-                                 yaxis=dict(showgrid=True, gridcolor="#1e1e35"), margin=dict(l=0, r=0, t=30, b=0))
+                                 showlegend=False, xaxis=dict(showgrid=False, title="Stock"),
+                                 yaxis=dict(showgrid=True, gridcolor="#1e1e35"),
+                                 margin=dict(l=0, r=0, t=30, b=0))
         st.plotly_chart(fig_change, use_container_width=True)
         st.dataframe(change_df.reset_index(drop=True), use_container_width=True)
 
@@ -319,9 +322,13 @@ with tab3:
 # TAB 4 — COMPARE
 # ══════════════════════════════════════════════════════════
 with tab4:
-    st.markdown('<p class="section-title">Compare Stocks — % Change from Start</p>', unsafe_allow_html=True)
-    selected_stocks = st.multiselect("Pick stocks to compare", sorted(df["symbol"].unique()),
-                                     default=sorted(df["symbol"].unique())[:3], key="cmp_stocks")
+    st.markdown('<p class="section-title">Compare Stocks — Percentage Change from Start</p>', unsafe_allow_html=True)
+    selected_stocks = st.multiselect(
+        "Pick stocks to compare",
+        sorted(df["symbol"].unique()),
+        default=sorted(df["symbol"].unique())[:min(3, len(df["symbol"].unique()))],
+        key="cmp_stocks"
+    )
 
     if len(selected_stocks) < 2:
         st.info("Select at least 2 stocks to compare.")
@@ -344,7 +351,7 @@ with tab4:
         fig_cmp.update_layout(
             paper_bgcolor="#111120", plot_bgcolor="#111120",
             font=dict(color="#aaaacc"),
-            yaxis_title="% Change from Start",
+            yaxis_title="Percentage Change (%)",
             xaxis=dict(showgrid=False, rangebreaks=[dict(bounds=["sat","mon"])]),
             yaxis=dict(showgrid=True, gridcolor="#1e1e35"),
             height=450, margin=dict(l=0, r=0, t=10, b=0),
@@ -361,12 +368,12 @@ with tab4:
             first_p  = sym_df["close"].iloc[0]
             stats.append({
                 "Stock": sym,
-                "Current ₹": f"₹{latest_p:,.2f}",
-                "High ₹": f"₹{sym_df['high'].max():,.2f}",
-                "Low ₹": f"₹{sym_df['low'].min():,.2f}",
-                "Avg ₹": f"₹{sym_df['close'].mean():,.2f}",
-                "Volatility": f"₹{sym_df['high'].max()-sym_df['low'].min():,.2f}",
-                "% Change": f"{((latest_p-first_p)/first_p)*100:+.2f}%",
+                "Current Price": f"₹{latest_p:,.2f}",
+                "Highest Price": f"₹{sym_df['high'].max():,.2f}",
+                "Lowest Price": f"₹{sym_df['low'].min():,.2f}",
+                "Average Price": f"₹{sym_df['close'].mean():,.2f}",
+                "Price Swing": f"₹{sym_df['high'].max()-sym_df['low'].min():,.2f}",
+                "Percentage Change": f"{((latest_p-first_p)/first_p)*100:+.2f}%",
                 "Days of Data": len(sym_df)
             })
         st.dataframe(pd.DataFrame(stats).set_index("Stock"), use_container_width=True)
