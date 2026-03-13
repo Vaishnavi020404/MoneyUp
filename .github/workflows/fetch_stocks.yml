@@ -2,19 +2,19 @@ name: Fetch NSE Stock Data
 
 on:
   schedule:
-    # Runs at 12:00 UTC (5:30 PM IST) 
-    # This ensures the final "snapshot" price of the day is 100% accurate.
-    - cron: '0 12 * * 1-5'
-  workflow_dispatch: # Allows you to run it manually anytime
+    - cron: '45 3 * * 1-5'
+    - cron: '0 10 * * 1-5'
+  workflow_dispatch:
 
 jobs:
   fetch:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write # CRITICAL: Gives the robot permission to save the file
     steps:
       - name: Checkout repo
         uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -22,7 +22,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install yfinance pandas
+        run: pip install yfinance
 
       - name: Run fetch script
         run: python ingestion/fetch_stock_data.py
@@ -30,15 +30,7 @@ jobs:
       - name: Commit and push updated DB
         run: |
           git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # This command finds every .db file and adds it, no matter the folder
-          find . -name "*.db" -exec git add {} +
-          
-          # Only commit if something actually changed
-          if ! git diff --cached --quiet; then
-            git commit -m "Auto-update prices: $(date)"
-            git push
-          else
-            echo "No changes detected in the database."
-          fi
+          git config user.email "github-actions[bot]      @users.noreply.github.com"
+          git add database/stock_data.db
+          git diff --staged --quiet || git commit -m      "Auto fetch: $(date +'%Y-%m-%d %H:%M')"
+          git push origin HEAD:${{ github.ref_name }}
