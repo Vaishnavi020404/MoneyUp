@@ -2,8 +2,8 @@ name: Fetch NSE Stock Data
 
 on:
   schedule:
-    - cron: '0 12 * * 1-5' # 5:30 PM IST
-  workflow_dispatch: 
+    - cron: '0 12 * * 1-5'
+  workflow_dispatch:
 
 jobs:
   fetch:
@@ -29,10 +29,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # This forces git to see the database file even if it wants to ignore it
-          git add -f **/*.db
-          
-          # This will commit and push only if there's actually a change
-          git commit -m "Fixed Auto-update: $(date)" || echo "No changes to commit"
-          git push origin HEAD:${{ github.ref_name }}
+          git add database/stock_data.db
+          git diff --staged --quiet || git commit -m "Auto update: $(date)"
+          git push
