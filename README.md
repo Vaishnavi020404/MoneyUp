@@ -58,4 +58,4 @@ Clone the repo, install dependencies with pip install -r requirements.txt, run p
 
 Built by Vaishnavi Pandey as a data analytics portfolio project. Open to Data Analyst and Data Science internship opportunities in Mumbai.
 
-🔗 LinkedIn: [(https://www.linkedin.com/in/vaishnavi-pandey-0106a6283/)] |  GitHub: https://github.com/Vaishnavi020404/
+🔗 LinkedIn: https://www.linkedin.com/in/vaishnavi-pandey-0106a6283/ |  GitHub: https://github.com/Vaishnavi020404/
