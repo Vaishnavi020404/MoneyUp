@@ -1,7 +1,7 @@
-import yfinance as yf
+from jugaad_data.nse import stock_df
 import sqlite3
 import os
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(BASE_DIR, "database", "stock_data.db")
@@ -12,53 +12,45 @@ c = conn.cursor()
 
 c.execute("""
 CREATE TABLE IF NOT EXISTS stock_prices (
-    symbol TEXT,
-    datetime TEXT,
-    open REAL,
-    high REAL,
-    low REAL,
-    close REAL,
-    fetched_at TEXT,
+    symbol TEXT, datetime TEXT, open REAL,
+    high REAL, low REAL, close REAL, fetched_at TEXT,
     PRIMARY KEY (symbol, datetime)
 )
 """)
 
-# Read symbols from DB — whatever user has added
 c.execute("SELECT DISTINCT symbol FROM stock_prices")
 symbols = [row[0] for row in c.fetchall()]
 
 if not symbols:
-    print("No stocks in DB yet. Add stocks from the dashboard first.")
+    print("No stocks in DB yet.")
 else:
+    today = date.today()
+    from_date = today - timedelta(days=3)
+
     for symbol in symbols:
         try:
-            ticker = yf.Ticker(f"{symbol}.NS")
-            # Fetch only the latest trading day
-            data = ticker.history(period="2d", interval="1d")
-
-            if data.empty:
+            df = stock_df(symbol=symbol, from_date=from_date,
+                          to_date=today, series="EQ")
+            if df.empty:
                 print(f"No data for {symbol}")
                 continue
 
-            latest = data.iloc[-1]
-            latest_dt = str(data.index[-1].date())
+            for _, row in df.iterrows():
+                c.execute("INSERT OR IGNORE INTO stock_prices VALUES (?,?,?,?,?,?,?)", (
+                    symbol,
+                    str(row["DATE"].date()),
+                    float(row["OPEN"]),
+                    float(row["HIGH"]),
+                    float(row["LOW"]),
+                    float(row["CLOSE"]),
+                    datetime.now().isoformat()
+                ))
 
-            c.execute("""
-            INSERT OR IGNORE INTO stock_prices VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                symbol,
-                latest_dt,
-                float(latest["Open"]),
-                float(latest["High"]),
-                float(latest["Low"]),
-                float(latest["Close"]),
-                datetime.now().isoformat()
-            ))
-
-            print(f"✓ {symbol} — ₹{latest['Close']:.2f}")
+            print(f"✓ {symbol} updated")
 
         except Exception as e:
             print(f"✗ {symbol} failed: {e}")
 
 conn.commit()
 conn.close()
+print("Done.")

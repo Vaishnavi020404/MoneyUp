@@ -3,9 +3,9 @@ import sqlite3
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import os
-import yfinance as yf
+from jugaad_data.nse import stock_df as jstock_df
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(BASE_DIR, "database", "stock_data.db")
@@ -27,10 +27,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🪙 MoneyUp — NSE Stock Analysis Dashboard")
+st.caption(f"Last refreshed: {datetime.now().strftime('%d %b %Y, %H:%M:%S')} · Prices reflect previous trading day's closing price · Updates twice daily on weekdays")
 st.info(f"📅 Data as of {(datetime.now() - timedelta(days=1)).strftime('%d %b %Y')} · Prices are previous trading day's closing prices")
 st.markdown('<meta http-equiv="refresh" content="60">', unsafe_allow_html=True)
 
-# ── Helper ─────────────────────────────────────────────────
 def ensure_table():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -49,8 +49,6 @@ ensure_table()
 # ── Sidebar ────────────────────────────────────────────────
 st.sidebar.title("🪙 MoneyUp")
 st.sidebar.markdown("---")
-
-# ADD STOCK
 st.sidebar.markdown("**➕ Add a Stock**")
 new_symbol = st.sidebar.text_input("NSE Symbol (e.g. TCS, HDFCBANK)", "").upper().strip()
 
@@ -58,28 +56,27 @@ if st.sidebar.button("Add Stock"):
     if new_symbol:
         with st.spinner(f"Loading data for {new_symbol}..."):
             try:
-                ticker = yf.Ticker(f"{new_symbol}.NS")
-                data = ticker.history(start="2026-01-01", end=datetime.today().strftime("%Y-%m-%d"), interval="1d")
-
-                if data.empty:
-                    st.sidebar.error(f"✗ '{new_symbol}' not found. Check the NSE symbol and try again.")
+                df_new = jstock_df(symbol=new_symbol, from_date=date(2026,1,1),
+                                   to_date=date.today(), series="EQ")
+                if df_new.empty:
+                    st.sidebar.error(f"✗ '{new_symbol}' not found. Check the NSE symbol.")
                 else:
                     conn = sqlite3.connect(DB_PATH)
                     c = conn.cursor()
                     c.execute("DELETE FROM stock_prices WHERE symbol = ?", (new_symbol,))
-                    for dt, row in data.iterrows():
+                    for _, row in df_new.iterrows():
                         c.execute("INSERT OR IGNORE INTO stock_prices VALUES (?,?,?,?,?,?,?)", (
                             new_symbol,
-                            str(dt.date()),
-                            float(row["Open"]),
-                            float(row["High"]),
-                            float(row["Low"]),
-                            float(row["Close"]),
+                            str(row["DATE"].date()),
+                            float(row["OPEN"]),
+                            float(row["HIGH"]),
+                            float(row["LOW"]),
+                            float(row["CLOSE"]),
                             datetime.now().isoformat()
                         ))
                     conn.commit()
                     conn.close()
-                    st.sidebar.success(f"✓ {new_symbol} added with {len(data)} days of data!")
+                    st.sidebar.success(f"✓ {new_symbol} added with {len(df_new)} days!")
                     st.cache_data.clear()
                     st.rerun()
             except Exception as e:
@@ -88,7 +85,6 @@ if st.sidebar.button("Add Stock"):
 # REMOVE STOCK
 st.sidebar.markdown("---")
 st.sidebar.markdown("**➖ Remove a Stock**")
-
 conn_s = sqlite3.connect(DB_PATH)
 existing_symbols = pd.read_sql_query("SELECT DISTINCT symbol FROM stock_prices ORDER BY symbol", conn_s)["symbol"].tolist()
 conn_s.close()
@@ -106,7 +102,7 @@ if existing_symbols:
         st.rerun()
 
 # ── Load Data ──────────────────────────────────────────────
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=3600)
 def load_data():
     conn = sqlite3.connect(DB_PATH)
     df = pd.read_sql_query("SELECT * FROM stock_prices", conn)
@@ -217,10 +213,10 @@ with tab2:
 
         with col_right:
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Current Price",    f"₹{latest['close']:,.2f}", f"{p_change:+.2f} ({pct:+.2f}%)")
-            m2.metric("Highest Price",    f"₹{filtered['high'].max():,.2f}")
-            m3.metric("Lowest Price",     f"₹{filtered['low'].min():,.2f}")
-            m4.metric("Price Swing",      f"₹{filtered['high'].max() - filtered['low'].min():,.2f}")
+            m1.metric("Current Price",  f"₹{latest['close']:,.2f}", f"{p_change:+.2f} ({pct:+.2f}%)")
+            m2.metric("Highest Price",  f"₹{filtered['high'].max():,.2f}")
+            m3.metric("Lowest Price",   f"₹{filtered['low'].min():,.2f}")
+            m4.metric("Price Swing",    f"₹{filtered['high'].max() - filtered['low'].min():,.2f}")
 
         fig2 = go.Figure(go.Candlestick(
             x=filtered["datetime"],
@@ -238,7 +234,6 @@ with tab2:
         )
         st.plotly_chart(fig2, use_container_width=True)
 
-        # Clean price history table
         st.markdown('<p class="section-title">Price History</p>', unsafe_allow_html=True)
         display_df = filtered[["datetime","open","high","low","close"]].copy()
         display_df["datetime"] = display_df["datetime"].dt.strftime("%d %b %Y")
